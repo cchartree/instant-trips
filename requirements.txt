@@ -1,0 +1,5 @@
+gspread
+google-auth
+beautifulsoup4
+nest_asyncio
+playwright
