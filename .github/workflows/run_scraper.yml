@@ -2,14 +2,12 @@ name: Run Instant Trips Scraper
 
 on:
   schedule:
-    # Runs automatically every day at 00:00 UTC (07:00 AM ICT)
     - cron: '0 0 * * *'
-  workflow_dispatch: # Allows manual trigger from the Actions tab
+  workflow_dispatch:
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
