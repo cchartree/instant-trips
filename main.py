@@ -4,6 +4,7 @@ import json
 import math
 import os
 import urllib.parse
+from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 import gspread
 from google.oauth2.service_account import Credentials
@@ -20,6 +21,7 @@ SPREADSHEET_ID = "1a8eVdyux7mVtzdlnNWS96D2WzNd4k8KO58oGo6ECum0"
 HOLIDAYS_SHEET_NAME = "Reference Holidays"
 TARGET_SHEET_NAME = "Feasible trips"
 LOOKAHEAD_DAYS = 90
+BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 
 # Target Destinations & Coordinates
 TARGET_DESTINATIONS = [
@@ -41,7 +43,7 @@ COLUMNS = [
     "distance_km",
     "price_range",
     "google_map_link",
-    "google_map_number_of_reviews",
+    "booking_link",
     "with_gym",
     "with_outdoor_running_space",
     "with_swimming_pool",
@@ -52,6 +54,7 @@ COLUMNS = [
     "total_positive",
     "negative_review",
     "total_negative",
+    "latest_run",
 ]
 
 
@@ -71,6 +74,17 @@ def calculate_haversine_distance(lat1, lon1, lat2, lon2):
     )
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return round(R * c * 1.2)
+
+
+def build_booking_search_url(destination_name, checkin_date, checkout_date):
+    """Builds the Booking.com search-results URL forced to THB currency."""
+    encoded_dest = urllib.parse.quote(destination_name + ", Thailand")
+    return (
+        f"https://www.booking.com/searchresults.en-gb.html?ss={encoded_dest}"
+        f"&checkin={checkin_date}&checkout={checkout_date}"
+        f"&group_adults=2&group_children=2&age=8&age=6"
+        f"&selected_currency=THB"
+    )
 
 
 def get_upcoming_holidays(spreadsheet):
@@ -108,13 +122,7 @@ async def scrape_booking_async(destination_name, checkin_date):
     dt = datetime.datetime.strptime(checkin_date, "%Y-%m-%d")
     checkout_date = (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-    encoded_dest = urllib.parse.quote(destination_name + ", Thailand")
-    url = (
-        f"https://www.booking.com/searchresults.en-gb.html?ss={encoded_dest}"
-        f"&checkin={checkin_date}&checkout={checkout_date}"
-        f"&group_adults=2&group_children=2&age=8&age=6"
-        f"&selected_currency=THB"
-    )
+    url = build_booking_search_url(destination_name, checkin_date, checkout_date)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -156,12 +164,21 @@ async def scrape_booking_async(destination_name, checkin_date):
                 )
                 rating_el = card.select_one('[data-testid="review-score"]')
 
+                # Try to extract the actual property page link; fall back to
+                # the search-results URL if the card has no direct href.
+                link_el = card.select_one('a[data-testid="title-link"]') or card.select_one("a[href]")
+                if link_el and link_el.get("href"):
+                    href = link_el["href"]
+                    property_link = href if href.startswith("http") else f"https://www.booking.com{href}"
+                else:
+                    property_link = url
+
                 if name_el:
                     results.append({
                         "name": name_el.text.strip(),
                         "price": price_el.text.strip() if price_el else "N/A",
                         "rating": rating_el.text.strip() if rating_el else "",
-                        "reviews_count": "",
+                        "booking_link": property_link,
                         "has_gym": "FALSE",
                         "has_pool": "TRUE",
                         "has_playground": "FALSE",
@@ -178,6 +195,9 @@ async def scrape_booking_async(destination_name, checkin_date):
 # MAIN EXECUTION FLOW
 # ==========================================
 async def main():
+    # Timestamp of this automated run, in Bangkok local time.
+    run_timestamp = datetime.datetime.now(BANGKOK_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -246,7 +266,7 @@ async def main():
                     "distance_km": dist_km,
                     "price_range": hotel.get("price", ""),
                     "google_map_link": map_search_url,
-                    "google_map_number_of_reviews": hotel.get("reviews_count", ""),
+                    "booking_link": hotel.get("booking_link", ""),
                     "with_gym": hotel.get("has_gym", "FALSE"),
                     "with_outdoor_running_space": "TRUE",
                     "with_swimming_pool": hotel.get("has_pool", "FALSE"),
@@ -257,12 +277,22 @@ async def main():
                     "total_positive": "",
                     "negative_review": "",
                     "total_negative": "",
+                    "latest_run": run_timestamp,
                 }
 
                 new_rows.append([row_data[col] for col in COLUMNS])
 
     # 3. Combine valid existing rows with new scraped rows
     all_combined = valid_rows + new_rows
+
+    # Pad any short rows (e.g. legacy rows written before "latest_run" existed)
+    # and stamp every row with this run's timestamp, since the whole sheet is
+    # rewritten on each execution.
+    latest_run_idx = COLUMNS.index("latest_run")
+    for row in all_combined:
+        while len(row) < len(COLUMNS):
+            row.append("")
+        row[latest_run_idx] = run_timestamp
 
     # 4. Sort combined rows chronologically by date_of_visit
     def parse_sort_date(r):
@@ -278,7 +308,7 @@ async def main():
     ws.update("A1", [header] + all_combined)
     print(
         f"Done! Cleaned past entries and updated sheet with {len(all_combined)}"
-        " total sorted rows."
+        f" total sorted rows. Run timestamp (BKK): {run_timestamp}"
     )
 
 
