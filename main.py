@@ -233,24 +233,9 @@ async def main():
     ws = sh.worksheet(TARGET_SHEET_NAME)
 
     today = datetime.date.today()
-    existing_rows = ws.get_all_values()
-
     header = COLUMNS
-    data_rows = existing_rows[1:] if len(existing_rows) > 1 else []
 
-    # 1. Purge outdated dates (where date_of_visit < today)
-    valid_rows = []
-    for row in data_rows:
-        if not row or not row[0]:
-            continue
-        try:
-            row_date = datetime.datetime.strptime(row[0].strip(), "%Y-%m-%d").date()
-            if row_date >= today:
-                valid_rows.append(row[: len(COLUMNS)])
-        except ValueError:
-            valid_rows.append(row[: len(COLUMNS)])
-
-    # 2. Fetch new holiday trips, then merge in every Saturday within the
+    # 1. Fetch new holiday trips, then merge in every Saturday within the
     #    lookahead window. Actual named holidays take precedence over the
     #    generic "Saturday" label if a holiday happens to fall on one.
     horizon = today + datetime.timedelta(days=LOOKAHEAD_DAYS)
@@ -309,33 +294,32 @@ async def main():
 
                 new_rows.append([row_data[col] for col in COLUMNS])
 
-    # 3. Combine valid existing rows with new scraped rows
-    all_combined = valid_rows + new_rows
+    # 2. This run's freshly scraped dataset — no data is carried over from
+    #    previous runs, so the sheet always reflects only this run's results.
+    all_rows = new_rows
 
-    # Pad any short rows (e.g. legacy rows written before "latest_run" existed)
-    # and stamp every row with this run's timestamp, since the whole sheet is
-    # rewritten on each execution.
+    # Every row is stamped with this run's timestamp for consistency.
     latest_run_idx = COLUMNS.index("latest_run")
-    for row in all_combined:
-        while len(row) < len(COLUMNS):
-            row.append("")
+    for row in all_rows:
         row[latest_run_idx] = run_timestamp
 
-    # 4. Sort combined rows chronologically by date_of_visit
+    # 3. Sort rows chronologically by date_of_visit
     def parse_sort_date(r):
         try:
             return datetime.datetime.strptime(r[0].strip(), "%Y-%m-%d").date()
         except Exception:
             return datetime.date.max
 
-    all_combined.sort(key=parse_sort_date)
+    all_rows.sort(key=parse_sort_date)
 
-    # 5. Clear and write updated dataset to Google Sheet
+    # 4. Fully clear the sheet, then write only this run's fresh dataset —
+    #    guarantees anyone reading the sheet always sees the latest run's
+    #    results with no stale or duplicated rows left over.
     ws.clear()
-    ws.update("A1", [header] + all_combined)
+    ws.update("A1", [header] + all_rows)
     print(
-        f"Done! Cleaned past entries and updated sheet with {len(all_combined)}"
-        f" total sorted rows. Run timestamp (BKK): {run_timestamp}"
+        f"Done! Cleared sheet and wrote {len(all_rows)} fresh rows."
+        f" Run timestamp (BKK): {run_timestamp}"
     )
 
 
