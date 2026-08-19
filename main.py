@@ -30,6 +30,11 @@ TARGET_DESTINATIONS = [
     {"name": "Hua Hin", "lat": 12.5684, "lon": 99.9577},
     {"name": "Pattaya", "lat": 12.9236, "lon": 100.8825},
     {"name": "Kanchanaburi", "lat": 14.0227, "lon": 99.5328},
+    {"name": "Phu Thap Boek", "lat": 16.7000, "lon": 101.0833},
+    {"name": "Trat", "lat": 12.2428, "lon": 102.5178},
+    {"name": "Chanthaburi", "lat": 12.6112, "lon": 102.1035},
+    {"name": "Ratchaburi", "lat": 13.5282, "lon": 99.8134},
+    {"name": "Phrae", "lat": 18.1445, "lon": 100.1405},
 ]
 
 BANGKOK_ORIGIN = {"lat": 13.7563, "lon": 100.5018}
@@ -85,6 +90,17 @@ def build_booking_search_url(destination_name, checkin_date, checkout_date):
         f"&group_adults=2&group_children=2&age=8&age=6"
         f"&selected_currency=THB"
     )
+
+
+def get_all_saturdays(start_date, end_date):
+    """Returns every Saturday between start_date and end_date (inclusive)."""
+    saturdays = []
+    days_until_saturday = (5 - start_date.weekday()) % 7  # Monday=0 ... Saturday=5
+    current = start_date + datetime.timedelta(days=days_until_saturday)
+    while current <= end_date:
+        saturdays.append({"date": current.strftime("%Y-%m-%d"), "name": "Saturday"})
+        current += datetime.timedelta(days=7)
+    return saturdays
 
 
 def get_upcoming_holidays(spreadsheet):
@@ -234,8 +250,19 @@ async def main():
         except ValueError:
             valid_rows.append(row[: len(COLUMNS)])
 
-    # 2. Fetch new holiday trips
+    # 2. Fetch new holiday trips, then merge in every Saturday within the
+    #    lookahead window. Actual named holidays take precedence over the
+    #    generic "Saturday" label if a holiday happens to fall on one.
+    horizon = today + datetime.timedelta(days=LOOKAHEAD_DAYS)
     holidays = get_upcoming_holidays(sh)
+    saturdays = get_all_saturdays(today, horizon)
+
+    merged_by_date = {h["date"]: h["name"] for h in saturdays}
+    merged_by_date.update({h["date"]: h["name"] for h in holidays})
+    holidays = [
+        {"date": d, "name": n} for d, n in sorted(merged_by_date.items())
+    ]
+
     new_rows = []
 
     for holiday in holidays:
